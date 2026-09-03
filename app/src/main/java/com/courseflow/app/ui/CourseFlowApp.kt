@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Notes
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -87,6 +89,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -149,6 +152,7 @@ fun CourseFlowApp(repository: ScheduleRepository) {
     val scope = rememberCoroutineScope()
     val currentWeek = state.config.weekFor()
 
+    var selectedWeek by rememberSaveable { mutableIntStateOf(currentWeek) }
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
     var detailCourse by remember { mutableStateOf<CourseSession?>(null) }
     var editingCourse by remember { mutableStateOf<CourseSession?>(null) }
@@ -182,6 +186,7 @@ fun CourseFlowApp(repository: ScheduleRepository) {
             onAddCourse = { addingCourse = true },
             onSave = {
                 repository.updateConfig(it)
+                selectedWeek = it.weekFor()
                 settingsOpen = false
             },
         )
@@ -191,7 +196,9 @@ fun CourseFlowApp(repository: ScheduleRepository) {
                 modifier = Modifier.padding(padding),
                 config = state.config,
                 courses = state.courses,
-                week = currentWeek,
+                week = selectedWeek,
+                currentWeek = currentWeek,
+                onWeekChange = { selectedWeek = it.coerceIn(1, state.config.totalWeeks) },
                 onCourseClick = { detailCourse = it },
                 onSettings = { settingsOpen = true },
             )
@@ -287,11 +294,14 @@ private fun ScheduleHome(
     config: SemesterConfig,
     courses: List<CourseSession>,
     week: Int,
+    currentWeek: Int,
+    onWeekChange: (Int) -> Unit,
     onCourseClick: (CourseSession) -> Unit,
     onSettings: () -> Unit,
 ) {
     val today = LocalDate.now()
     val visibleCourses = courses.filter { it.occursInWeek(week) }
+    var weekPickerOpen by rememberSaveable { mutableStateOf(false) }
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -306,6 +316,7 @@ private fun ScheduleHome(
         Header(
             week = week,
             today = today,
+            onSelectWeek = { weekPickerOpen = true },
             onSettings = onSettings,
         )
         Spacer(Modifier.height(2.dp))
@@ -313,7 +324,27 @@ private fun ScheduleHome(
             shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 1.dp,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .pointerInput(week, config.totalWeeks) {
+                    var horizontalDrag = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { horizontalDrag = 0f },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            horizontalDrag += dragAmount
+                        },
+                        onDragEnd = {
+                            when {
+                                horizontalDrag < -72f && week < config.totalWeeks -> onWeekChange(week + 1)
+                                horizontalDrag > 72f && week > 1 -> onWeekChange(week - 1)
+                            }
+                            horizontalDrag = 0f
+                        },
+                        onDragCancel = { horizontalDrag = 0f },
+                    )
+                }
+                .semantics { contentDescription = "第${week}周课表，左右滑动切换周次" },
         ) {
             Column(Modifier.padding(top = 2.dp, bottom = 40.dp)) {
                 ScheduleGrid(
@@ -326,24 +357,43 @@ private fun ScheduleHome(
             }
         }
     }
+    if (weekPickerOpen) {
+        WeekPickerDialog(
+            selectedWeek = week,
+            currentWeek = currentWeek,
+            totalWeeks = config.totalWeeks,
+            onDismiss = { weekPickerOpen = false },
+            onSelect = {
+                onWeekChange(it)
+                weekPickerOpen = false
+            },
+        )
+    }
 }
 
 @Composable
 private fun Header(
     week: Int,
     today: LocalDate,
+    onSelectWeek: () -> Unit,
     onSettings: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            "第${week}周",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-        )
-        Spacer(Modifier.width(10.dp))
+        Surface(
+            onClick = onSelectWeek,
+            color = Color.Transparent,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.semantics { contentDescription = "选择周次，当前第${week}周" },
+        ) {
+            Row(Modifier.padding(start = 2.dp, end = 2.dp, top = 9.dp, bottom = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("第${week}周", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Icon(Icons.Rounded.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+        }
+        Spacer(Modifier.width(8.dp))
         Text(
             today.format(DateTimeFormatter.ofPattern("M月d日 · EEEE", Locale.CHINA)),
             style = MaterialTheme.typography.bodySmall,
@@ -354,6 +404,45 @@ private fun Header(
             Icon(Icons.Rounded.Settings, contentDescription = null)
         }
     }
+}
+
+@Composable
+private fun WeekPickerDialog(
+    selectedWeek: Int,
+    currentWeek: Int,
+    totalWeeks: Int,
+    onDismiss: () -> Unit,
+    onSelect: (Int) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Rounded.CalendarMonth, contentDescription = null) },
+        title = { Text("选择要查看的周次") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                (1..totalWeeks).chunked(5).forEach { rowWeeks ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        rowWeeks.forEach { week ->
+                            FilterChip(
+                                selected = week == selectedWeek,
+                                onClick = { onSelect(week) },
+                                label = { Text(week.toString(), textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        repeat(5 - rowWeeks.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        dismissButton = if (selectedWeek != currentWeek) {
+            { TextButton(onClick = { onSelect(currentWeek) }) { Text("回到本周") } }
+        } else null,
+    )
 }
 
 @Composable
