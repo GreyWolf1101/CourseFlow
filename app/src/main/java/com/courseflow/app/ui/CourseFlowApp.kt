@@ -6,7 +6,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,6 +30,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -75,6 +76,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -89,7 +91,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -116,6 +117,8 @@ import com.courseflow.app.update.InstallLaunchResult
 import com.courseflow.app.update.ReleaseInfo
 import com.courseflow.app.update.UpdateCheckResult
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.runtime.snapshotFlow
 import java.time.LocalDate
 import java.time.Instant
 import java.time.DayOfWeek
@@ -300,8 +303,23 @@ private fun ScheduleHome(
     onSettings: () -> Unit,
 ) {
     val today = LocalDate.now()
-    val visibleCourses = courses.filter { it.occursInWeek(week) }
     var weekPickerOpen by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val pagerState = rememberPagerState(
+        initialPage = (week - 1).coerceIn(0, config.totalWeeks - 1),
+        pageCount = { config.totalWeeks },
+    )
+    LaunchedEffect(week, config.totalWeeks) {
+        val targetPage = (week - 1).coerceIn(0, config.totalWeeks - 1)
+        if (targetPage != pagerState.currentPage && !pagerState.isScrollInProgress) {
+            pagerState.animateScrollToPage(targetPage)
+        }
+    }
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.currentPage }
+            .distinctUntilChanged()
+            .collect { onWeekChange(it + 1) }
+    }
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -326,34 +344,25 @@ private fun ScheduleHome(
             tonalElevation = 1.dp,
             modifier = Modifier
                 .fillMaxWidth()
-                .pointerInput(week, config.totalWeeks) {
-                    var horizontalDrag = 0f
-                    detectHorizontalDragGestures(
-                        onDragStart = { horizontalDrag = 0f },
-                        onHorizontalDrag = { change, dragAmount ->
-                            change.consume()
-                            horizontalDrag += dragAmount
-                        },
-                        onDragEnd = {
-                            when {
-                                horizontalDrag < -72f && week < config.totalWeeks -> onWeekChange(week + 1)
-                                horizontalDrag > 72f && week > 1 -> onWeekChange(week - 1)
-                            }
-                            horizontalDrag = 0f
-                        },
-                        onDragCancel = { horizontalDrag = 0f },
-                    )
-                }
                 .semantics { contentDescription = "第${week}周课表，左右滑动切换周次" },
         ) {
             Column(Modifier.padding(top = 2.dp, bottom = 40.dp)) {
-                ScheduleGrid(
-                    config = config,
-                    week = week,
-                    courses = visibleCourses,
-                    today = today,
-                    onCourseClick = onCourseClick,
-                )
+                val timetableHeight = 60.dp + 80.dp * config.periods.size
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxWidth().height(timetableHeight),
+                    beyondViewportPageCount = 1,
+                    key = { it },
+                ) { page ->
+                    val pageWeek = page + 1
+                    ScheduleGrid(
+                        config = config,
+                        week = pageWeek,
+                        courses = courses.filter { it.occursInWeek(pageWeek) },
+                        today = today,
+                        onCourseClick = onCourseClick,
+                    )
+                }
             }
         }
     }
@@ -364,8 +373,8 @@ private fun ScheduleHome(
             totalWeeks = config.totalWeeks,
             onDismiss = { weekPickerOpen = false },
             onSelect = {
-                onWeekChange(it)
                 weekPickerOpen = false
+                scope.launch { pagerState.animateScrollToPage(it - 1) }
             },
         )
     }
@@ -499,10 +508,10 @@ private fun DayHeader(date: LocalDate, width: Dp, height: Dp, isToday: Boolean) 
             Surface(
                 color = if (isToday) Coral else Color.Transparent,
                 shape = CircleShape,
-                modifier = Modifier.size(28.dp),
+                modifier = Modifier.height(28.dp).widthIn(min = 38.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(date.dayOfMonth.toString(), fontSize = 11.sp, color = if (isToday) Ink else MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
+                    Text("${date.monthValue}/${date.dayOfMonth}", fontSize = 10.sp, color = if (isToday) Ink else MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                 }
             }
         }
