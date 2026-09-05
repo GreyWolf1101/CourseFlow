@@ -7,6 +7,7 @@ import com.courseflow.app.model.PeriodDefinition
 import com.courseflow.app.model.ScheduleState
 import com.courseflow.app.model.SemesterConfig
 import com.courseflow.app.model.WeekPattern
+import com.courseflow.app.model.defaultPeriods
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
@@ -62,7 +63,7 @@ object ScheduleShareCodec {
     }
 
     /** WakeUp shares contain five newline-separated JSON values; join courses by ID. */
-    fun decodeWakeUp(shareData: String): ParsedSchedule {
+    fun decodeWakeUp(shareData: String, fallbackPeriods: List<PeriodDefinition> = defaultPeriods()): ParsedSchedule {
         require(shareData.length <= MAX_BYTES) { "WakeUp 课表内容过大" }
         val parts = shareData.lines().filter { it.isNotBlank() }
         require(parts.size >= 5) { "WakeUp 分享数据不完整，请重新分享" }
@@ -70,13 +71,31 @@ object ScheduleShareCodec {
         val settings = JSONObject(parts[2])
         val bases = JSONArray(parts[3])
         val details = JSONArray(parts[4])
+        val warnings = mutableListOf<String>()
         val coursesById = (0 until bases.length()).associate { bases.getJSONObject(it).let { item -> item.getInt("id") to item } }
-        val periods = (0 until times.length()).map { index ->
-            val time = times.getJSONObject(index)
+        val usedNodes = (0 until details.length()).maxOfOrNull { index ->
+            val detail = details.getJSONObject(index)
+            detail.getInt("startNode").toLong() + detail.getInt("step") - 1
+        } ?: 0L
+        val timeRows = (0 until times.length()).map { times.getJSONObject(it) }
+        val declaredNodes = settings.optInt("nodes", 0)
+        val nodeCount = maxOf(usedNodes, if (declaredNodes > 0) declaredNodes.toLong() else
+            timeRows.maxOfOrNull { it.getInt("node") }?.toLong() ?: fallbackPeriods.size.toLong())
+        require(nodeCount in 1..30) { "WakeUp 课表实际需要 $nodeCount 节，当前支持每天1—30节；显示设置为 $declaredNodes 节" }
+        val relevantTimes = timeRows.filter { it.getInt("node").toLong() in 1..nodeCount }
+        val importedTimes = relevantTimes.map { time ->
             val start = LocalTime.parse(time.getString("startTime"), DateTimeFormatter.ofPattern("H:mm"))
             val end = LocalTime.parse(time.getString("endTime"), DateTimeFormatter.ofPattern("H:mm"))
             PeriodDefinition(time.getInt("node"), start.toString(), ChronoUnit.MINUTES.between(start, end).toInt())
-        }.sortedBy { it.index }
+        }.groupBy { it.index }
+        require(importedTimes.values.all { it.distinct().size == 1 }) { "WakeUp 同一节次附带了多套不同上课时间，请在 WakeUp 选择正确的时间表后重新分享" }
+        val missingTimes = mutableListOf<Int>()
+        val periods = (1..nodeCount.toInt()).map { node ->
+            importedTimes[node]?.first() ?: fallbackPeriods.firstOrNull { it.index == node }?.also { missingTimes += node }
+                ?: error("WakeUp 未附带第${node}节上课时间，当前课表也未配置该节；请先在设置补充上课时间")
+        }
+        if (missingTimes.isNotEmpty()) warnings += "WakeUp 未附带第${missingTimes.joinToString("、")}节的上课时间，暂沿用本应用当前配置，请在设置中核对；星期、周次和课程节次仍采用原课表。"
+        if (relevantTimes.size < timeRows.size) warnings += "按课表显示设置及实际课程导入${nodeCount}节，未使用额外的备用时间记录。"
         val startDate = LocalDate.parse(settings.getString("startDate"), DateTimeFormatter.ofPattern("uuuu-M-d").withResolverStyle(ResolverStyle.STRICT))
         val config = SemesterConfig(name = settings.optString("tableName", "WakeUp 课表"), startDate = startDate.toString(),
             totalWeeks = settings.getInt("maxWeek"), periods = periods)
@@ -90,13 +109,14 @@ object ScheduleShareCodec {
                 colorIndex = Math.floorMod(base.getString("courseName").hashCode(), 12))
         }
         validate(ScheduleState(config, courses))
-        return ParsedSchedule(courses, config = config.copy(startDate = config.monday().toString()))
+        return ParsedSchedule(courses, warnings = warnings, config = config.copy(startDate = config.monday().toString()))
     }
 
     private fun validate(state: ScheduleState) {
         val config = state.config
         LocalDate.parse(config.startDate)
-        require(config.totalWeeks in 1..30 && config.periods.size in 1..30) { "课表周数或节数超出支持范围（1—30）" }
+        require(config.totalWeeks in 1..30) { "课表学期总周数为${config.totalWeeks}，当前支持1—30周" }
+        require(config.periods.size in 1..30) { "课表上课时间配置为${config.periods.size}节，当前支持1—30节" }
         require(config.periods.map { it.index } == (1..config.periods.size).toList()) { "上课节次不连续，请先修正源课表" }
         config.periods.forEach { LocalTime.parse(it.startTime); require(it.durationMinutes in 1..240) { "上课时间无效" } }
         require(state.courses.size <= 3000) { "课程数量过多" }

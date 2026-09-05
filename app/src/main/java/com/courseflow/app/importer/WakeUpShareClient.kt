@@ -4,6 +4,9 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 import java.security.SecureRandom
 import java.util.Base64
 
@@ -28,21 +31,25 @@ class WakeUpShareClient(
         val signA = WakeUpProtocol.hexEncode(WakeUpProtocol.encrypt("8&%d*##$nonce##318c6d4f74655d4f032fb0466bcfdfbc##$cuid", "@fG2SuLA"))
         val handshake = post("/pluto/app/antispam", form(listOf("data" to signA) + common) + "&", headers)
         val signB = responseData(handshake).ifBlank { handshake.optJSONObject("result")?.optString("data").orEmpty() }
-        require(signB.isNotBlank()) { "WakeUp 分享服务暂不可用，请稍后重试，或导入教务系统保存的 HTML 文件" }
+        require(signB.isNotBlank()) { "WakeUp 服务校验未通过（错误码 ${handshake.optInt("errNo", -1)}），尚未读取课表；请稍后重试或导入 HTML 文件" }
         val plain = WakeUpProtocol.decrypt(WakeUpProtocol.hexDecode(signB), nonce.take(5) + "#G4")
         require(plain.size >= 22 && String(plain.copyOfRange(0, 10), Charsets.ISO_8859_1) == nonce) { "WakeUp 分享服务响应校验失败" }
         val token = String(plain.copyOfRange(12, 22), Charsets.ISO_8859_1)
         val key = WakeUpProtocol.key(token, "530")
         val data = Base64.getEncoder().encodeToString(WakeUpProtocol.rc4("key=${encode(code)}".toByteArray(), key))
-        val timing = listOf("nt" to "wifi", "_t_" to System.currentTimeMillis().toString(), "kakorrhaphiophobia" to (System.nanoTime() / 1_000_000).toString())
+        val timing = listOf("nt" to "wifi", "_t_" to (System.currentTimeMillis() / 1000).toString(), "kakorrhaphiophobia" to (System.nanoTime() / 1_000_000).toString())
         val params = listOf("data" to data) + common + timing
         val toSign = Base64.getEncoder().encodeToString(params.map { "${it.first}=${it.second}" }.sorted().joinToString("").toByteArray())
         val sign = WakeUpProtocol.md5("8&%d*[${WakeUpProtocol.md5(token)}]@$toSign")
         val response = post("/share_schedule/getv2", "&" + form(params + ("sign" to sign)), headers)
-        require(response.optInt("errNo", -1) == 0) { "WakeUp 口令已过期、无效或服务暂不可用，请重新生成口令" }
+        require(response.optInt("errNo", -1) == 0) { "WakeUp 拒绝读取课表（错误码 ${response.optInt("errNo", -1)}）；请确认口令仍在30分钟有效期内，或稍后重试" }
         val encrypted = responseData(response)
         require(encrypted.isNotBlank()) { "WakeUp 没有返回课表内容，请重新分享" }
-        val decoded = JSONObject(String(WakeUpProtocol.rc4(Base64.getDecoder().decode(encrypted), key), Charsets.UTF_8))
+        val decoded = try {
+            JSONObject(String(WakeUpProtocol.rc4(Base64.getDecoder().decode(encrypted), key), Charsets.UTF_8))
+        } catch (error: Exception) {
+            throw IllegalStateException("WakeUp 已返回内容，但分享响应解码失败，可能是服务协议发生变化", error)
+        }
         return decoded.optString("shareData").also { require(it.isNotBlank()) { "WakeUp 口令已失效或课表为空" } }
     }
 
@@ -56,6 +63,7 @@ class WakeUpShareClient(
 }
 
 private fun postWakeUpForm(path: String, body: String, headers: Map<String, String>): JSONObject {
+    val stage = if (path.endsWith("antispam")) "服务校验" else "读取课表"
     val connection = URL("https://api.wakeup.fun$path").openConnection() as HttpURLConnection
     try {
         connection.connectTimeout = 15_000
@@ -79,9 +87,17 @@ private fun postWakeUpForm(path: String, body: String, headers: Map<String, Stri
             }
             result.toString()
         }
-        return JSONObject(text)
+        return try { JSONObject(text) } catch (error: org.json.JSONException) {
+            throw IllegalStateException("WakeUp $stage 返回了无法识别的响应，请稍后重试", error)
+        }
     } catch (error: java.io.IOException) {
-        throw IllegalStateException("无法连接 WakeUp 分享服务，请检查网络后重试", error)
+        val reason = when (error) {
+            is SocketTimeoutException -> "连接或读取超时"
+            is UnknownHostException -> "无法解析服务地址"
+            is SSLException -> "安全连接失败"
+            else -> "网络连接失败"
+        }
+        throw IllegalStateException("WakeUp $stage：$reason，尚不能判断口令是否过期。请检查网络或切换网络后重试", error)
     } finally {
         connection.disconnect()
     }

@@ -353,7 +353,7 @@ fun CourseFlowApp(repository: ScheduleRepository) {
                 passphraseOpen = false
                 scope.launch {
                     isImporting = true
-                    runCatching { importer.importPassphrase(phrase) }.onSuccess { importResult = it }
+                    runCatching { importer.importPassphrase(phrase, state.config) }.onSuccess { importResult = it }
                         .onFailure { importError = it.message ?: "口令解析失败，请重新复制" }
                     isImporting = false
                 }

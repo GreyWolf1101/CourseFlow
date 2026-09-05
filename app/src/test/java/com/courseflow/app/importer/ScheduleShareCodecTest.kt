@@ -56,6 +56,43 @@ class ScheduleShareCodecTest {
         assertTrue(runCatching { ScheduleShareCodec.decodeWakeUp(wakeData.replace("\"id\":42,\"day\"", "\"id\":99,\"day\"")) }.isFailure)
     }
 
+    @Test fun `WakeUp twenty weeks ten nodes with no time rows imports using current times`() {
+        val parts = wakeData.lines().toMutableList()
+        parts[1] = "[]"
+        parts[2] = JSONObject(parts[2]).put("nodes", 10).toString()
+        val current = defaultPeriods().map { if (it.index == 1) it.copy(startTime = "08:15") else it }
+        val parsed = ScheduleShareCodec.decodeWakeUp(parts.joinToString("\n"), current)
+        assertEquals(20, parsed.config!!.totalWeeks)
+        assertEquals(10, parsed.config!!.periods.size)
+        assertEquals("08:15", parsed.config!!.periods.first().startTime)
+        assertEquals("高等数学", parsed.courses.single().name)
+        assertTrue(parsed.warnings.any { it.contains("暂沿用") })
+    }
+
+    @Test fun `WakeUp unused time template rows do not inflate actual node count`() {
+        val parts = wakeData.lines().toMutableList()
+        parts[1] = org.json.JSONArray().apply {
+            (1..40).forEach { put(JSONObject().put("node", it).put("startTime", if (it <= 10) "08:00" else "99:00").put("endTime", "08:45")) }
+        }.toString()
+        parts[2] = JSONObject(parts[2]).put("nodes", 10).toString()
+        val parsed = ScheduleShareCodec.decodeWakeUp(parts.joinToString("\n"))
+        assertEquals(10, parsed.config!!.periods.size)
+        assertTrue(parsed.warnings.any { it.contains("备用") })
+    }
+
+    @Test fun `WakeUp time rows cannot override course nodes or hide conflicting times`() {
+        val parts = wakeData.lines().toMutableList()
+        parts[2] = JSONObject(parts[2]).put("nodes", 1).toString()
+        assertEquals(2, ScheduleShareCodec.decodeWakeUp(parts.joinToString("\n")).config!!.periods.size)
+        parts[1] = org.json.JSONArray(parts[1]).put(JSONObject().put("node", 1).put("startTime", "08:30").put("endTime", "09:15")).toString()
+        assertTrue(runCatching { ScheduleShareCodec.decodeWakeUp(parts.joinToString("\n")) }.exceptionOrNull()!!.message!!.contains("多套"))
+    }
+
+    @Test fun `WakeUp invalid week count is reported separately`() {
+        val error = runCatching { ScheduleShareCodec.decodeWakeUp(wakeData.replace("\"maxWeek\":20", "\"maxWeek\":40")) }.exceptionOrNull()!!
+        assertTrue(error.message!!.contains("总周数为40"))
+    }
+
     @Test fun `WakeUp full protocol exchanges validate nonce and decode shared payload`() {
         var calls = 0
         val key = "abcdef0123456789abcdef0123456789"
@@ -68,6 +105,11 @@ class ScheduleShareCodecTest {
                 JSONObject().put("data", WakeUpProtocol.hexEncode(WakeUpProtocol.encrypt("$nonce##1234567890", nonce.take(5) + "#G4")))
             } else {
                 assertEquals("/share_schedule/getv2", path)
+                val requestSeconds = params.getValue("_t_").toLong()
+                assertTrue("WakeUp expects seconds, not milliseconds", kotlin.math.abs(System.currentTimeMillis() / 1000 - requestSeconds) < 5)
+                val signedParams = params.filterKeys { it != "sign" }.map { "${it.key}=${it.value}" }.sorted().joinToString("")
+                val encodedParams = java.util.Base64.getEncoder().encodeToString(signedParams.toByteArray())
+                assertEquals(WakeUpProtocol.md5("8&%d*[${WakeUpProtocol.md5("1234567890")}]@$encodedParams"), params["sign"])
                 val rcKey = WakeUpProtocol.key("1234567890", "530")
                 assertEquals("key=$key", String(WakeUpProtocol.rc4(java.util.Base64.getDecoder().decode(params.getValue("data")), rcKey)))
                 val encoded = java.util.Base64.getEncoder().encodeToString(WakeUpProtocol.rc4(JSONObject().put("shareData", wakeData).toString().toByteArray(), rcKey))

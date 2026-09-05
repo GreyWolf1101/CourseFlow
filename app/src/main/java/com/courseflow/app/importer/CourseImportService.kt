@@ -61,9 +61,9 @@ class CourseImportService(private val context: Context) {
         )
     }
 
-    suspend fun importPassphrase(text: String): ImportResult = withContext(Dispatchers.IO) {
+    suspend fun importPassphrase(text: String, config: SemesterConfig = SemesterConfig()): ImportResult = withContext(Dispatchers.IO) {
         val parsed = if (ScheduleShareCodec.isLocal(text)) ScheduleShareCodec.decode(text)
-            else ScheduleShareCodec.decodeWakeUp(WakeUpShareClient().fetch(ScheduleShareCodec.wakeUpKey(text)))
+            else ScheduleShareCodec.decodeWakeUp(WakeUpShareClient().fetch(ScheduleShareCodec.wakeUpKey(text)), config.periods)
         ImportResult(if (ScheduleShareCodec.isLocal(text)) "课序分享口令" else "WakeUp 分享口令", parsed, "")
     }
 
