@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -58,6 +59,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -94,6 +96,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -105,6 +108,10 @@ import com.courseflow.app.BuildConfig
 import com.courseflow.app.data.ScheduleRepository
 import com.courseflow.app.importer.CourseImportService
 import com.courseflow.app.importer.ImportResult
+import com.courseflow.app.importer.ScheduleShareCodec
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import com.courseflow.app.model.CourseSession
 import com.courseflow.app.model.PeriodDefinition
 import com.courseflow.app.model.SemesterConfig
@@ -159,8 +166,13 @@ fun CourseFlowApp(repository: ScheduleRepository) {
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
     var detailCourse by remember { mutableStateOf<CourseSession?>(null) }
     var editingCourse by remember { mutableStateOf<CourseSession?>(null) }
-    var addingCourse by remember { mutableStateOf(false) }
+    var newCourse by remember { mutableStateOf<CourseSession?>(null) }
+    var importMenuOpen by remember { mutableStateOf(false) }
+    var passphraseOpen by remember { mutableStateOf(false) }
+    var shareText by remember { mutableStateOf<String?>(null) }
     var deleteCourse by remember { mutableStateOf<CourseSession?>(null) }
+    var courseDeletionOpen by remember { mutableStateOf(false) }
+    var clearCoursesOpen by remember { mutableStateOf(false) }
     var importResult by remember { mutableStateOf<ImportResult?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
     var isImporting by remember { mutableStateOf(false) }
@@ -168,7 +180,7 @@ fun CourseFlowApp(repository: ScheduleRepository) {
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
             isImporting = true
-            runCatching { importer.import(uri, state.config.totalWeeks) }
+            runCatching { importer.import(uri, state.config) }
                 .onSuccess { importResult = it }
                 .onFailure { importError = it.message ?: "导入失败，请检查文件内容" }
             isImporting = false
@@ -178,15 +190,17 @@ fun CourseFlowApp(repository: ScheduleRepository) {
     if (settingsOpen) {
         SettingsPage(
             config = state.config,
+            courseCount = state.courses.size,
+            onSelectDelete = { courseDeletionOpen = true },
+            onClearCourses = { clearCoursesOpen = true },
             onBack = { settingsOpen = false },
-            onImport = {
-                filePicker.launch(arrayOf(
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "application/pdf", "text/csv", "text/plain",
-                ))
+            onImport = { importMenuOpen = true },
+            onShare = {
+                runCatching { ScheduleShareCodec.encode(state) }
+                    .onSuccess { shareText = it }.onFailure { importError = it.message }
             },
-            onAddCourse = { addingCourse = true },
+            onAddCourse = { newCourse = CourseSession(name = "", dayOfWeek = LocalDate.now().dayOfWeek.value,
+                startPeriod = 1, startWeek = selectedWeek, endWeek = state.config.totalWeeks) },
             onSave = {
                 repository.updateConfig(it)
                 selectedWeek = it.weekFor()
@@ -203,6 +217,10 @@ fun CourseFlowApp(repository: ScheduleRepository) {
                 currentWeek = currentWeek,
                 onWeekChange = { selectedWeek = it.coerceIn(1, state.config.totalWeeks) },
                 onCourseClick = { detailCourse = it },
+                onSlotClick = { day, period, week ->
+                    newCourse = CourseSession(name = "", dayOfWeek = day, startPeriod = period,
+                        startWeek = week, endWeek = state.config.totalWeeks, colorIndex = state.courses.size % courseColors.size)
+                },
                 onSettings = { settingsOpen = true },
             )
         }
@@ -224,32 +242,48 @@ fun CourseFlowApp(repository: ScheduleRepository) {
         )
     }
 
-    val courseToEdit = editingCourse ?: if (addingCourse) {
-        CourseSession(
-            name = "",
-            dayOfWeek = LocalDate.now().dayOfWeek.value,
-            startPeriod = 1,
-            endWeek = state.config.totalWeeks,
-            colorIndex = state.courses.size % courseColors.size,
-        )
-    } else null
+    val courseToEdit = editingCourse ?: newCourse
     courseToEdit?.let { course ->
         CourseEditorDialog(
             original = course,
             totalPeriods = state.config.periods.size,
             totalWeeks = state.config.totalWeeks,
+            config = state.config,
             onDismiss = {
                 editingCourse = null
-                addingCourse = false
+                newCourse = null
             },
             onSave = {
                 repository.saveCourse(it)
                 editingCourse = null
-                addingCourse = false
+                newCourse = null
             },
         )
     }
 
+    if (courseDeletionOpen) {
+        CourseDeletionDialog(
+            courses = state.courses,
+            onDismiss = { courseDeletionOpen = false },
+            onDelete = { ids ->
+                repository.deleteCourses(ids)
+                courseDeletionOpen = false
+            },
+        )
+    }
+    if (clearCoursesOpen) {
+        AlertDialog(
+            onDismissRequest = { clearCoursesOpen = false },
+            icon = { Icon(Icons.Rounded.DeleteOutline, contentDescription = null) },
+            title = { Text("清空整张课表？") },
+            text = { Text("将删除所有周的 ${state.courses.size} 条课程安排，保留学期日期和上课时间。删除后无法撤销。") },
+            confirmButton = {
+                Button(onClick = { repository.clearCourses(); clearCoursesOpen = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("确认清空") }
+            },
+            dismissButton = { TextButton(onClick = { clearCoursesOpen = false }) { Text("取消") } },
+        )
+    }
     deleteCourse?.let { course ->
         AlertDialog(
             onDismissRequest = { deleteCourse = null },
@@ -272,11 +306,75 @@ fun CourseFlowApp(repository: ScheduleRepository) {
     importResult?.let { result ->
         ImportPreviewDialog(
             result = result,
+            currentConfig = state.config,
+            onChange = { importResult = it },
             onDismiss = { importResult = null },
             onImport = { replace ->
-                repository.importCourses(result.parsed.courses, replace)
+                repository.importCourses(result.parsed.courses, replace, if (replace) result.parsed.config else null)
+                selectedWeek = repository.state.value.config.weekFor()
                 importResult = null
             },
+        )
+    }
+    if (importMenuOpen) {
+        AlertDialog(
+            onDismissRequest = { importMenuOpen = false },
+            title = { Text("导入课表") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("当前第一周周一：${state.config.monday()}。文件中的周次会以此计算日期。")
+                    Button(onClick = {
+                        importMenuOpen = false
+                        filePicker.launch(arrayOf(
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "application/pdf", "text/csv", "text/plain", "text/tab-separated-values", "text/html", "application/xhtml+xml",
+                        ))
+                    }, modifier = Modifier.fillMaxWidth()) { Text("选择文件（含 HTML）") }
+                    OutlinedButton(onClick = { importMenuOpen = false; passphraseOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("口令导入 · 课序 / WakeUp")
+                    }
+                    Text("支持 DOCX、XLSX、PDF、HTML、CSV、TXT。导入后可逐条核对和修改。", style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = { TextButton(onClick = { importMenuOpen = false }) { Text("取消") } },
+        )
+    }
+    if (passphraseOpen) {
+        var phrase by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { passphraseOpen = false },
+            title = { Text("口令导入") },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("粘贴课序或 WakeUp 的完整分享文案。WakeUp 口令需要联网读取分享课表。")
+                OutlinedTextField(phrase, { phrase = it }, label = { Text("分享口令") }, minLines = 3, maxLines = 6, modifier = Modifier.fillMaxWidth())
+            } },
+            confirmButton = { Button(enabled = phrase.isNotBlank() && !isImporting, onClick = {
+                passphraseOpen = false
+                scope.launch {
+                    isImporting = true
+                    runCatching { importer.importPassphrase(phrase) }.onSuccess { importResult = it }
+                        .onFailure { importError = it.message ?: "口令解析失败，请重新复制" }
+                    isImporting = false
+                }
+            }) { Text("解析并预览") } },
+            dismissButton = { TextButton(onClick = { passphraseOpen = false }) { Text("取消") } },
+        )
+    }
+    shareText?.let { text ->
+        var copied by remember(text) { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { shareText = null },
+            title = { Text("课序分享口令") },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("口令包含完整课程、学期日期和上课时间，可在另一台设备中离线导入。")
+                OutlinedTextField(text, {}, readOnly = true, label = { Text("完整口令") }, maxLines = 5)
+            } },
+            confirmButton = { Button(onClick = {
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("课序分享口令", text))
+                copied = true
+            }) { Text(if (copied) "已复制" else "复制口令") } },
+            dismissButton = { TextButton(onClick = { shareText = null }) { Text("关闭") } },
         )
     }
     importError?.let { message ->
@@ -300,6 +398,7 @@ private fun ScheduleHome(
     currentWeek: Int,
     onWeekChange: (Int) -> Unit,
     onCourseClick: (CourseSession) -> Unit,
+    onSlotClick: (Int, Int, Int) -> Unit,
     onSettings: () -> Unit,
 ) {
     val today = LocalDate.now()
@@ -361,6 +460,7 @@ private fun ScheduleHome(
                         courses = courses.filter { it.occursInWeek(pageWeek) },
                         today = today,
                         onCourseClick = onCourseClick,
+                        onSlotClick = { day, period -> onSlotClick(day, period, pageWeek) },
                     )
                 }
             }
@@ -461,6 +561,7 @@ private fun ScheduleGrid(
     courses: List<CourseSession>,
     today: LocalDate,
     onCourseClick: (CourseSession) -> Unit,
+    onSlotClick: (Int, Int) -> Unit,
 ) {
     val slotHeight = 80.dp
     val headerHeight = 60.dp
@@ -492,6 +593,9 @@ private fun ScheduleGrid(
                             courses = courses.filter { it.dayOfWeek == day },
                             isToday = config.dateFor(week, day) == today,
                             onCourseClick = onCourseClick,
+                            onSlotClick = { period -> onSlotClick(day, period) },
+                            day = day,
+                            week = week,
                         )
                     }
                 }
@@ -543,6 +647,9 @@ private fun DayColumn(
     courses: List<CourseSession>,
     isToday: Boolean,
     onCourseClick: (CourseSession) -> Unit,
+    onSlotClick: (Int) -> Unit,
+    day: Int,
+    week: Int,
 ) {
     Box(
         Modifier.width(width).height(height)
@@ -550,8 +657,11 @@ private fun DayColumn(
             .border(.5.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(Modifier.fillMaxSize()) {
-            repeat(periodCount) {
-                Box(Modifier.height(slotHeight).fillMaxWidth().border(.5.dp, MaterialTheme.colorScheme.outlineVariant))
+            repeat(periodCount) { index ->
+                val occupied = courses.any { index + 1 in it.startPeriod until it.startPeriod + it.periodSpan }
+                Box(Modifier.height(slotHeight).fillMaxWidth().border(.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                    .then(if (!occupied) Modifier.clickable(onClickLabel = "添加课程") { onSlotClick(index + 1) }
+                        .semantics { contentDescription = "第${week}周，周${dayNames[day - 1]}第${index + 1}节，添加课程" } else Modifier))
             }
         }
         courses.forEach { course ->
@@ -678,6 +788,7 @@ private fun CourseEditorDialog(
     original: CourseSession,
     totalPeriods: Int,
     totalWeeks: Int,
+    config: SemesterConfig,
     onDismiss: () -> Unit,
     onSave: (CourseSession) -> Unit,
 ) {
@@ -720,6 +831,7 @@ private fun CourseEditorDialog(
                         StepperCard("开始节次", startPeriod, 1, totalPeriods, { startPeriod = it; span = span.coerceAtMost(totalPeriods - it + 1) }, Modifier.weight(1f))
                         StepperCard("连续节数", span, 1, totalPeriods - startPeriod + 1, { span = it }, Modifier.weight(1f))
                     }
+                    Text("周${dayNames[day - 1]} · 第${startPeriod}—${startPeriod + span - 1}节 · ${config.dateFor(startWeek, day)} 起", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
                     Text("连续课程会合并成一张完整卡片显示。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     FieldLabel("上课周数")
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -928,8 +1040,12 @@ private fun UpdatePanel() {
 @Composable
 private fun SettingsPage(
     config: SemesterConfig,
+    courseCount: Int,
+    onSelectDelete: () -> Unit,
+    onClearCourses: () -> Unit,
     onBack: () -> Unit,
     onImport: () -> Unit,
+    onShare: () -> Unit,
     onAddCourse: () -> Unit,
     onSave: (SemesterConfig) -> Unit,
 ) {
@@ -979,6 +1095,17 @@ private fun SettingsPage(
                     Spacer(Modifier.width(7.dp))
                     Text("添加课程")
                 }
+            }
+            OutlinedButton(onClick = onShare, modifier = Modifier.fillMaxWidth()) { Text("生成课序分享口令") }
+            Text("也可以在首页点击空白时段，直接添加该时段的课程。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Text("课程管理", style = MaterialTheme.typography.headlineSmall)
+            Text(if (courseCount == 0) "课表为空，点击首页空白时段即可添加课程。" else "共 $courseCount 条课程安排，可选择删除或清空整张课表。",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(onClick = onSelectDelete, enabled = courseCount > 0, modifier = Modifier.weight(1f)) { Text("选择课程删除") }
+                OutlinedButton(onClick = onClearCourses, enabled = courseCount > 0, modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("清空课表") }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Text("关于与更新", style = MaterialTheme.typography.headlineSmall)
@@ -1098,51 +1225,137 @@ private fun PeriodEditorDialog(period: PeriodDefinition, onDismiss: () -> Unit, 
 }
 
 @Composable
-private fun ImportPreviewDialog(result: ImportResult, onDismiss: () -> Unit, onImport: (Boolean) -> Unit) {
+private fun CourseDeletionDialog(courses: List<CourseSession>, onDismiss: () -> Unit, onDelete: (Set<String>) -> Unit) {
+    var selected by remember { mutableStateOf(emptySet<String>()) }
+    var confirming by remember { mutableStateOf(false) }
+    val selectedCourses = courses.filter { it.id in selected }
     Dialog(onDismissRequest = onDismiss) {
-        Surface(shape = RoundedCornerShape(26.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().heightIn(max = 680.dp)) {
+        Surface(shape = RoundedCornerShape(26.dp), color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(.8f)) {
             Column(Modifier.padding(20.dp)) {
-                Text("导入预览", style = MaterialTheme.typography.headlineSmall)
-                Text(result.fileName, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height(16.dp))
-                Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-                    Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (result.parsed.courses.isEmpty()) Icons.Rounded.WarningAmber else Icons.Rounded.Check, contentDescription = null)
-                        Spacer(Modifier.width(10.dp))
-                        Text("识别到 ${result.parsed.courses.size} 门课程", style = MaterialTheme.typography.titleMedium)
+                Text("选择课程删除", style = MaterialTheme.typography.headlineSmall)
+                Text("勾选要删除的课程安排，将从其所有上课周中移除。", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("已选择 ${selectedCourses.size} 条", modifier = Modifier.weight(1f))
+                    TextButton(onClick = { selected = if (selectedCourses.size == courses.size) emptySet() else courses.map { it.id }.toSet() }) {
+                        Text(if (selectedCourses.size == courses.size) "取消全选" else "全选")
                     }
                 }
-                result.parsed.warnings.forEach { warning ->
-                    Text("• $warning", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
-                }
-                Spacer(Modifier.height(12.dp))
-                if (result.parsed.courses.isNotEmpty()) {
-                    LazyColumn(Modifier.heightIn(max = 280.dp)) {
-                        items(result.parsed.courses) { course ->
-                            Row(Modifier.fillMaxWidth().padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Box(Modifier.size(9.dp).clip(CircleShape).background(courseColors[Math.floorMod(course.colorIndex, courseColors.size)].background))
-                                Spacer(Modifier.width(10.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(course.name, style = MaterialTheme.typography.labelLarge)
-                                    Text("周${dayNames[course.dayOfWeek - 1]} · 第${course.startPeriod}—${course.startPeriod + course.periodSpan - 1}节 · ${course.startWeek}—${course.endWeek}周 ${course.weekPattern.label}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
+                LazyColumn(Modifier.weight(1f)) {
+                    items(courses.sortedWith(compareBy<CourseSession> { it.name }.thenBy { it.dayOfWeek }.thenBy { it.startPeriod }), key = { it.id }) { course ->
+                        Row(Modifier.fillMaxWidth()
+                            .toggleable(value = course.id in selected, role = Role.Checkbox) {
+                                selected = if (it) selected + course.id else selected - course.id
                             }
-                            HorizontalDivider()
+                            .semantics { contentDescription = "选择删除${course.name}，周${dayNames[course.dayOfWeek - 1]}第${course.startPeriod}节" }
+                            .padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = course.id in selected, onCheckedChange = null)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(course.name, style = MaterialTheme.typography.titleSmall)
+                                Text("周${dayNames[course.dayOfWeek - 1]} · 第${course.startPeriod}—${course.startPeriod + course.periodSpan - 1}节 · ${course.startWeek}—${course.endWeek}周 ${course.weekPattern.label}",
+                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (course.teacher.isNotBlank() || course.room.isNotBlank()) Text(
+                                    listOf(course.teacher, course.room).filter { it.isNotBlank() }.joinToString(" · "),
+                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
+                        HorizontalDivider()
                     }
-                } else {
-                    Text("识别文字预览", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
-                    Text(result.rawPreview.ifBlank { "没有可预览的文字" }, fontSize = 12.sp, maxLines = 9, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
                 }
-                Spacer(Modifier.height(16.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onDismiss) { Text("取消") }
-                    OutlinedButton(onClick = { onImport(false) }, enabled = result.parsed.courses.isNotEmpty()) { Text("追加") }
-                    Spacer(Modifier.width(8.dp))
-                    Button(onClick = { onImport(true) }, enabled = result.parsed.courses.isNotEmpty()) { Text("覆盖导入") }
+                    Button(onClick = { confirming = true }, enabled = selectedCourses.isNotEmpty(),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("删除所选（${selectedCourses.size}）") }
                 }
             }
         }
+    }
+    if (confirming) AlertDialog(
+        onDismissRequest = { confirming = false },
+        title = { Text("删除选中的 ${selectedCourses.size} 条课程安排？") },
+        text = { Text(selectedCourses.take(5).joinToString("、") { it.name } +
+            (if (selectedCourses.size > 5) "等课程" else "") + "将从课表中移除，删除后无法撤销。") },
+        confirmButton = { Button(onClick = { onDelete(selectedCourses.map { it.id }.toSet()) },
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("确认删除") } },
+        dismissButton = { TextButton(onClick = { confirming = false }) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun ImportPreviewDialog(
+    result: ImportResult,
+    currentConfig: SemesterConfig,
+    onChange: (ImportResult) -> Unit,
+    onDismiss: () -> Unit,
+    onImport: (Boolean) -> Unit,
+) {
+    var editing by remember { mutableStateOf<CourseSession?>(null) }
+    val config = result.parsed.config ?: currentConfig
+    var firstMonday by remember(config.startDate) { mutableStateOf(config.monday().toString()) }
+    val enteredDate = runCatching { LocalDate.parse(firstMonday) }.getOrNull()
+    val canAppend = config.monday() == currentConfig.monday() && config.totalWeeks == currentConfig.totalWeeks && config.periods == currentConfig.periods
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(26.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().fillMaxHeight(.9f)) {
+            Column(Modifier.padding(20.dp)) {
+                Text("导入预览", style = MaterialTheme.typography.headlineSmall)
+                Text(result.fileName, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(12.dp))
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    item {
+                        Text("识别到 ${result.parsed.courses.size} 条课程安排", style = MaterialTheme.typography.titleMedium)
+                        Text("第一周周一：${config.monday()} · 共${config.totalWeeks}周", style = MaterialTheme.typography.bodyMedium)
+                        OutlinedTextField(firstMonday, { firstMonday = it }, label = { Text("第一周周一（yyyy-MM-dd）") }, singleLine = true,
+                            isError = enteredDate == null || enteredDate.dayOfWeek != DayOfWeek.MONDAY, modifier = Modifier.fillMaxWidth())
+                        TextButton(onClick = { enteredDate?.let { date -> onChange(result.copy(parsed = result.parsed.copy(config = config.copy(startDate = date.toString())))) } },
+                            enabled = enteredDate?.dayOfWeek == DayOfWeek.MONDAY && enteredDate != config.monday()) { Text("应用日期") }
+                        if (result.parsed.config != null) Text("覆盖导入将同时应用预览中的学期日期和上课时间。", style = MaterialTheme.typography.bodySmall)
+                        if (!canAppend) Text("来源课表的日期或上课时间与当前课表不同，无法直接追加；可核对后覆盖导入。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                    items(result.parsed.warnings) { warning ->
+                        Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                    items(result.parsed.courses, key = { it.id }) { course ->
+                        Column(Modifier.fillMaxWidth().clickable { editing = course }.padding(vertical = 6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(course.name, style = MaterialTheme.typography.titleSmall)
+                                    Text("周${dayNames[course.dayOfWeek - 1]} · 第${course.startPeriod}—${course.startPeriod + course.periodSpan - 1}节", style = MaterialTheme.typography.bodySmall)
+                                    Text("第${course.startWeek}—${course.endWeek}周 · ${course.weekPattern.label}", style = MaterialTheme.typography.bodySmall)
+                                    val firstWeek = (course.startWeek..course.endWeek).firstOrNull { course.occursInWeek(it) }
+                                    Text(if (firstWeek != null) "按学期推算首次上课：${config.dateFor(firstWeek, course.dayOfWeek)}" else "所选周数内没有符合单双周规则的课程", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                                    Text(listOf(course.teacher, course.room).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "教师 / 教室未识别，可点击补充" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                IconButton(onClick = { editing = course }) { Icon(Icons.Rounded.Edit, contentDescription = "修改${course.name}") }
+                                IconButton(onClick = { onChange(result.copy(parsed = result.parsed.copy(courses = result.parsed.courses.filterNot { it.id == course.id }))) }) {
+                                    Icon(Icons.Rounded.DeleteOutline, contentDescription = "移除${course.name}")
+                                }
+                            }
+                            HorizontalDivider(Modifier.padding(top = 8.dp))
+                        }
+                    }
+                    if (result.parsed.courses.isEmpty()) item {
+                        Text("识别文字预览", style = MaterialTheme.typography.labelLarge)
+                        Text(result.rawPreview.ifBlank { "没有可导入的课程" }, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    OutlinedButton(onClick = { onImport(false) }, enabled = result.parsed.courses.isNotEmpty() && canAppend && firstMonday == config.monday().toString()) { Text("追加") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = { onImport(true) }, enabled = result.parsed.courses.isNotEmpty() && firstMonday == config.monday().toString()) { Text("覆盖导入") }
+                }
+            }
+        }
+    }
+    editing?.let { course ->
+        CourseEditorDialog(original = course, totalPeriods = config.periods.size, totalWeeks = config.totalWeeks, config = config,
+            onDismiss = { editing = null }, onSave = { changed ->
+                onChange(result.copy(parsed = result.parsed.copy(courses = result.parsed.courses.map { if (it.id == changed.id) changed else it })))
+                editing = null
+            })
     }
 }
 

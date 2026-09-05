@@ -29,7 +29,13 @@ class ScheduleRepository(context: Context) {
         _state.value.copy(courses = _state.value.courses.filterNot { it.id == id })
     )
 
-    fun importCourses(courses: List<CourseSession>, replace: Boolean) {
+    fun deleteCourses(ids: Set<String>) = update(
+        _state.value.copy(courses = _state.value.courses.filterNot { it.id in ids })
+    )
+
+    fun clearCourses() = update(_state.value.copy(courses = emptyList()))
+
+    fun importCourses(courses: List<CourseSession>, replace: Boolean, config: SemesterConfig? = null) {
         val all = if (replace) courses else _state.value.courses + courses
         val unique = all.distinctBy {
             listOf(
@@ -37,7 +43,7 @@ class ScheduleRepository(context: Context) {
                 it.startPeriod, it.periodSpan, it.startWeek, it.endWeek, it.weekPattern,
             ).joinToString("|")
         }
-        update(_state.value.copy(courses = mergeContinuousCourses(unique)))
+        update(_state.value.copy(courses = mergeContinuousCourses(unique), config = config ?: _state.value.config))
     }
 
     fun updateConfig(config: SemesterConfig) = update(_state.value.copy(config = config))
@@ -49,7 +55,11 @@ class ScheduleRepository(context: Context) {
 
     private fun load(): ScheduleState {
         val raw = prefs.getString("state", null) ?: return sampleState()
-        return runCatching { JSONObject(raw).toScheduleState().withEveningPeriods() }.getOrElse { sampleState() }
+        return runCatching {
+            val json = JSONObject(raw)
+            val state = json.toScheduleState()
+            if (json.optInt("schemaVersion", 1) < 2) state.withEveningPeriods() else state
+        }.getOrElse { sampleState() }
     }
 }
 
@@ -60,7 +70,8 @@ private fun ScheduleState.withEveningPeriods(): ScheduleState {
     return copy(config = config.copy(periods = (config.periods + missing).sortedBy { it.index }))
 }
 
-private fun ScheduleState.toJson() = JSONObject().apply {
+internal fun ScheduleState.toJson() = JSONObject().apply {
+    put("schemaVersion", 2)
     put("config", JSONObject().apply {
         put("name", config.name)
         put("startDate", config.startDate)
@@ -95,7 +106,7 @@ private fun ScheduleState.toJson() = JSONObject().apply {
     })
 }
 
-private fun JSONObject.toScheduleState(): ScheduleState {
+internal fun JSONObject.toScheduleState(): ScheduleState {
     val configJson = getJSONObject("config")
     val periodsJson = configJson.getJSONArray("periods")
     val periods = (0 until periodsJson.length()).map { index ->
