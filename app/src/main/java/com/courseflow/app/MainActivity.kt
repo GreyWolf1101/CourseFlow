@@ -9,6 +9,10 @@ import com.courseflow.app.ui.CourseFlowApp
 import com.courseflow.app.ui.theme.CourseFlowTheme
 
 class MainActivity : ComponentActivity() {
+    override fun onResume() {
+        super.onResume()
+        com.courseflow.app.widget.ScheduleWidgetProvider.updateAll(applicationContext)
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()

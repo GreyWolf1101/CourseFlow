@@ -39,6 +39,12 @@ WakeUp 按来源显示节数和实际课程节次选择时间配置，不再把�
 
 WakeUp 协议中的加密兼容部分由 [WakeUpDecoder](https://github.com/airline233/WakeUpDecoder) 的 Apache-2.0 实现移植为 Kotlin，许可证随 APK 放在 `assets/licenses/WakeUpDecoder-LICENSE.txt`。HTML 读取使用 [jsoup](https://jsoup.org/cookbook/input/parse-document-from-string)。
 
+## 桌面小组件
+
+在应用设置点击“添加桌面小组件”，或长按系统桌面空白处 → 小组件 → 课序 → 今天和明天。浅色圆角卡片分两列显示今天／明天的课程、时间和教室，顶部显示课表名称、日期与周次。支持拖动缩放，空间不足会提示剩余课程数量，点击卡片打开应用。
+
+课程增删、导入或学期设置保存后会刷新所有小组件；系统定期更新，并在开机、时间／时区变化及打开应用时刷新。省电或休眠状态可能延迟系统更新。学期前后明确显示未开始／已结束，不会把第一周或最后一周课程重复显示到学期外。
+
 ## 构建
 
 使用 Android Studio（JDK 17、Android SDK 35）打开项目，或运行：

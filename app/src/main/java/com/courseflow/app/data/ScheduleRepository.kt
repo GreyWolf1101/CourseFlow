@@ -14,6 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class ScheduleRepository(context: Context) {
+    private val appContext = context.applicationContext
     private val prefs = context.getSharedPreferences("courseflow_schedule", Context.MODE_PRIVATE)
     private val _state = MutableStateFlow(load())
     val state: StateFlow<ScheduleState> = _state
@@ -51,6 +52,7 @@ class ScheduleRepository(context: Context) {
     private fun update(value: ScheduleState) {
         _state.value = value
         prefs.edit().putString("state", value.toJson().toString()).apply()
+        com.courseflow.app.widget.ScheduleWidgetProvider.updateAll(appContext, value)
     }
 
     private fun load(): ScheduleState {

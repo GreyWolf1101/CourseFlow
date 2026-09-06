@@ -1050,6 +1050,7 @@ private fun SettingsPage(
     onSave: (SemesterConfig) -> Unit,
 ) {
     BackHandler(onBack = onBack)
+    val widgetContext = LocalContext.current
     var name by remember(config) { mutableStateOf(config.name) }
     var startDate by remember(config) { mutableStateOf(config.monday()) }
     var totalWeeks by remember(config) { mutableIntStateOf(config.totalWeeks) }
@@ -1097,6 +1098,14 @@ private fun SettingsPage(
                 }
             }
             OutlinedButton(onClick = onShare, modifier = Modifier.fillMaxWidth()) { Text("生成课序分享口令") }
+            OutlinedButton(onClick = {
+                val manager = android.appwidget.AppWidgetManager.getInstance(widgetContext)
+                if (android.os.Build.VERSION.SDK_INT >= 26 && manager.isRequestPinAppWidgetSupported) {
+                    manager.requestPinAppWidget(android.content.ComponentName(widgetContext, com.courseflow.app.widget.ScheduleWidgetProvider::class.java), null, null)
+                } else {
+                    android.widget.Toast.makeText(widgetContext, "请长按桌面空白处，选择小组件 → 课序 → 今天和明天", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }, modifier = Modifier.fillMaxWidth()) { Text("添加桌面小组件") }
             Text("也可以在首页点击空白时段，直接添加该时段的课程。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Text("课程管理", style = MaterialTheme.typography.headlineSmall)
