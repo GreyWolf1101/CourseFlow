@@ -19,7 +19,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <receiver android:name=".widget.ScheduleWidgetProvider" android:exported="false" android:label="课序 · 今天和明天">
+        <receiver android:name=".widget.ScheduleWidgetProvider" android:exported="false" android:label="课序 · 今日课程">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
                 <action android:name="android.intent.action.DATE_CHANGED" />

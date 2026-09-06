@@ -1,0 +1,11 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+ android:id="@+id/course_card" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="56dp"
+ android:orientation="horizontal" android:gravity="center_vertical" android:padding="10dp" android:paddingTop="6dp" android:paddingBottom="6dp"
+ android:layout_marginBottom="8dp" android:background="@drawable/widget_card_1">
+ <ImageView android:id="@+id/course_accent" android:layout_width="3dp" android:layout_height="match_parent" android:background="@drawable/widget_accent_1" android:contentDescription="@null"/>
+ <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:orientation="vertical">
+  <TextView android:id="@+id/course_name" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="概率与数学统计" android:textSize="14sp" android:textStyle="bold" android:textColor="#202C2B" android:maxLines="1" android:ellipsize="end" android:includeFontPadding="false"/>
+  <TextView android:id="@+id/course_time" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="10:00–11:40  主教404" android:textSize="11sp" android:textColor="#566564" android:maxLines="1" android:ellipsize="end" android:includeFontPadding="false"/>
+  <TextView android:visibility="gone" android:id="@+id/course_room" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="电教202" android:textSize="11sp" android:textColor="#566564" android:maxLines="1" android:ellipsize="end" android:includeFontPadding="false"/>
+ </LinearLayout>
+</LinearLayout>

@@ -1103,7 +1103,7 @@ private fun SettingsPage(
                 if (android.os.Build.VERSION.SDK_INT >= 26 && manager.isRequestPinAppWidgetSupported) {
                     manager.requestPinAppWidget(android.content.ComponentName(widgetContext, com.courseflow.app.widget.ScheduleWidgetProvider::class.java), null, null)
                 } else {
-                    android.widget.Toast.makeText(widgetContext, "请长按桌面空白处，选择小组件 → 课序 → 今天和明天", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(widgetContext, "请长按桌面空白处，选择小组件 → 课序 → 今日课程", android.widget.Toast.LENGTH_LONG).show()
                 }
             }, modifier = Modifier.fillMaxWidth()) { Text("添加桌面小组件") }
             Text("也可以在首页点击空白时段，直接添加该时段的课程。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
