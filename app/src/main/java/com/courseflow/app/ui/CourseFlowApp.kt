@@ -113,6 +113,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import com.courseflow.app.model.CourseSession
+import com.courseflow.app.model.generatePeriods
+import com.courseflow.app.model.linkedSchoolPeriods
+import com.courseflow.app.model.resizePeriods
+import com.courseflow.app.model.periodValidationError
 import com.courseflow.app.model.PeriodDefinition
 import com.courseflow.app.model.SemesterConfig
 import com.courseflow.app.model.WeekPattern
@@ -191,6 +195,7 @@ fun CourseFlowApp(repository: ScheduleRepository) {
         SettingsPage(
             config = state.config,
             courseCount = state.courses.size,
+            minimumPeriods = state.courses.maxOfOrNull { it.startPeriod + it.periodSpan - 1 } ?: 1,
             onSelectDelete = { courseDeletionOpen = true },
             onClearCourses = { clearCoursesOpen = true },
             onBack = { settingsOpen = false },
@@ -229,7 +234,7 @@ fun CourseFlowApp(repository: ScheduleRepository) {
     detailCourse?.let { course ->
         CourseDetailSheet(
             course = course,
-            periods = state.config.periods,
+            config = state.config,
             onDismiss = { detailCourse = null },
             onEdit = {
                 detailCourse = null
@@ -722,13 +727,11 @@ private fun CourseCard(
 @Composable
 private fun CourseDetailSheet(
     course: CourseSession,
-    periods: List<PeriodDefinition>,
+    config: SemesterConfig,
     onDismiss: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val first = periods.getOrNull(course.startPeriod - 1)
-    val last = periods.getOrNull(course.startPeriod + course.periodSpan - 2)
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp)) {
             Row(verticalAlignment = Alignment.Top) {
@@ -743,7 +746,7 @@ private fun CourseDetailSheet(
             }
             Spacer(Modifier.height(20.dp))
             DetailRow(Icons.Rounded.CalendarMonth, "周${dayNames[course.dayOfWeek - 1]} · 第${course.startPeriod}—${course.startPeriod + course.periodSpan - 1}节")
-            DetailRow(Icons.Rounded.Schedule, "${first?.startTime ?: "--:--"}—${last?.endTime() ?: "--:--"}")
+            DetailRow(Icons.Rounded.Schedule, config.courseTime(course))
             DetailRow(Icons.Rounded.LocationOn, course.room.ifBlank { "未填写教室" })
             DetailRow(Icons.Rounded.Person, course.teacher.ifBlank { "未填写任课教师" })
             DetailRow(Icons.Rounded.Info, "第${course.startWeek}—${course.endWeek}周")
@@ -832,6 +835,7 @@ private fun CourseEditorDialog(
                         StepperCard("连续节数", span, 1, totalPeriods - startPeriod + 1, { span = it }, Modifier.weight(1f))
                     }
                     Text("周${dayNames[day - 1]} · 第${startPeriod}—${startPeriod + span - 1}节 · ${config.dateFor(startWeek, day)} 起", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                    Text(config.courseTime(original.copy(startPeriod = startPeriod, periodSpan = span)), style = MaterialTheme.typography.bodyMedium)
                     Text("连续课程会合并成一张完整卡片显示。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     FieldLabel("上课周数")
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -904,9 +908,9 @@ private fun StepperCard(label: String, value: Int, min: Int, max: Int, onChange:
         Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { onChange((value - 1).coerceAtLeast(min)) }, enabled = value > min) { Text("−", fontSize = 22.sp) }
+                IconButton(onClick = { onChange((value - 1).coerceAtLeast(min)) }, enabled = value > min, modifier = Modifier.semantics { contentDescription = "减少$label" }) { Text("−", fontSize = 22.sp) }
                 Text(value.toString(), style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center, modifier = Modifier.width(30.dp))
-                IconButton(onClick = { onChange((value + 1).coerceAtMost(max)) }, enabled = value < max) { Text("+", fontSize = 22.sp) }
+                IconButton(onClick = { onChange((value + 1).coerceAtMost(max)) }, enabled = value < max, modifier = Modifier.semantics { contentDescription = "增加$label" }) { Text("+", fontSize = 22.sp) }
             }
         }
     }
@@ -1041,6 +1045,7 @@ private fun UpdatePanel() {
 private fun SettingsPage(
     config: SemesterConfig,
     courseCount: Int,
+    minimumPeriods: Int,
     onSelectDelete: () -> Unit,
     onClearCourses: () -> Unit,
     onBack: () -> Unit,
@@ -1055,6 +1060,9 @@ private fun SettingsPage(
     var startDate by remember(config) { mutableStateOf(config.monday()) }
     var totalWeeks by remember(config) { mutableIntStateOf(config.totalWeeks) }
     var periods by remember(config) { mutableStateOf(config.periods) }
+    var continuousTeaching by remember(config) { mutableStateOf(config.continuousTeaching) }
+    var batchOpen by remember { mutableStateOf(false) }
+    val timeError = periodValidationError(periods)
     var editingPeriod by remember { mutableStateOf<PeriodDefinition?>(null) }
     var calendarOpen by remember { mutableStateOf(false) }
 
@@ -1068,7 +1076,7 @@ private fun SettingsPage(
                         Text("课表设置", style = MaterialTheme.typography.titleLarge)
                         Text("导入、课程、学期与上课时间", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    TextButton(onClick = { onSave(config.copy(name = name.trim(), startDate = startDate.toString(), totalWeeks = totalWeeks, periods = periods)) }, enabled = name.isNotBlank()) { Text("保存") }
+                    TextButton(onClick = { onSave(config.copy(name = name.trim(), startDate = startDate.toString(), totalWeeks = totalWeeks, periods = periods, continuousTeaching = continuousTeaching)) }, enabled = name.isNotBlank() && timeError == null) { Text("保存") }
                 }
             }
         },
@@ -1152,6 +1160,20 @@ private fun SettingsPage(
             StepperCard("学期总周数", totalWeeks, 1, 30, { totalWeeks = it }, Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
             Text("上课时间", style = MaterialTheme.typography.headlineSmall)
+            StepperCard("每天上课节数", periods.size, minimumPeriods, 30,
+                { periods = resizePeriods(periods, it) }, Modifier.fillMaxWidth())
+            Text("支持每天1—30节；已有课程占用的节次不能移除。新增节次后请核对时间。", style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = { batchOpen = true }, modifier = Modifier.fillMaxWidth()) { Text("批量设置上课时间") }
+            OutlinedButton(onClick = { periods = linkedSchoolPeriods(); continuousTeaching = true },
+                enabled = minimumPeriods <= 14, modifier = Modifier.fillMaxWidth()) { Text("应用14节联排模板") }
+            Text("模板：上午1—5节，下午6—10节，晚上11—14节；每节45分钟，晚间两组之间休息10分钟。应用后点击保存生效。", style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.fillMaxWidth().toggleable(value = continuousTeaching, role = Role.Checkbox,
+                onValueChange = { continuousTeaching = it }), verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = continuousTeaching, onCheckedChange = null)
+                Text("联排课程中间不休息", modifier = Modifier.weight(1f))
+            }
+            Text("开启后，连续课程按各节时长相加计算结束时间。例如模板第4节连上2节为10:30–12:00。关闭时按末节下课时间计算。", style = MaterialTheme.typography.bodySmall)
+            timeError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Text("点击任意节次，可修改开始时间和一节课的分钟数。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             periods.forEach { period ->
                 Surface(
@@ -1176,6 +1198,12 @@ private fun SettingsPage(
             }
             Spacer(Modifier.height(40.dp))
         }
+    }
+    if (batchOpen) {
+        BatchPeriodDialog(periods, onDismiss = { batchOpen = false }, onApply = { generated ->
+            periods = periods.map { old -> generated.firstOrNull { it.index == old.index } ?: old }
+            batchOpen = false
+        })
     }
     editingPeriod?.let { period ->
         PeriodEditorDialog(
@@ -1215,6 +1243,38 @@ private fun SettingsPage(
 }
 
 @Composable
+private fun BatchPeriodDialog(periods: List<PeriodDefinition>, onDismiss: () -> Unit, onApply: (List<PeriodDefinition>) -> Unit) {
+    var first by remember { mutableIntStateOf(1) }
+    var last by remember { mutableIntStateOf(periods.size) }
+    var time by remember { mutableStateOf(periods.first().startTime) }
+    var duration by remember { mutableIntStateOf(45) }
+    var group by remember { mutableIntStateOf(1) }
+    var rest by remember { mutableIntStateOf(10) }
+    val generated = runCatching { generatePeriods(first, last, time, duration, group, rest) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("批量设置上课时间") },
+        text = {
+            Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("可设置全天，也可分别设置上午、下午和晚上。所选范围内的原时间会被替换。")
+                StepperCard("起始节次", first, 1, periods.size, { first = it; last = maxOf(last, it); time = periods[it - 1].startTime }, Modifier.fillMaxWidth())
+                StepperCard("结束节次", last, first, periods.size, { last = it }, Modifier.fillMaxWidth())
+                OutlinedTextField(time, { time = it }, label = { Text("首节开始时间（HH:mm）") }, singleLine = true)
+                StepperCard("每节分钟数", duration, 1, 240, { duration = it }, Modifier.fillMaxWidth())
+                StepperCard("每组连续节数", group, 1, 30, { group = it }, Modifier.fillMaxWidth())
+                StepperCard("组间休息（分钟）", rest, 0, 240, { rest = it }, Modifier.fillMaxWidth())
+                Text("每组内不休息，从所选起始节次开始分组；普通课间休息请将每组设为1节。")
+                generated.fold(onSuccess = { items ->
+                    Text("预览：第${items.first().index}节 ${items.first().startTime} → 第${items.last().index}节 ${items.last().endTime()}下课")
+                }, onFailure = { Text("时间格式须为HH:mm，且所有课程须在当天结束。", color = MaterialTheme.colorScheme.error) })
+            }
+        },
+        confirmButton = { Button(onClick = { onApply(generated.getOrThrow()) }, enabled = generated.isSuccess) { Text("应用到所选节次") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
 private fun PeriodEditorDialog(period: PeriodDefinition, onDismiss: () -> Unit, onSave: (PeriodDefinition) -> Unit) {
     var time by remember(period) { mutableStateOf(period.startTime) }
     var duration by remember(period) { mutableIntStateOf(period.durationMinutes) }
@@ -1225,10 +1285,10 @@ private fun PeriodEditorDialog(period: PeriodDefinition, onDismiss: () -> Unit, 
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 OutlinedTextField(time, { time = it }, label = { Text("开始时间（HH:mm）") }, isError = !timeValid, singleLine = true)
-                StepperCard("一节课时长（分钟）", duration, 20, 180, { duration = it }, Modifier.fillMaxWidth())
+                StepperCard("一节课时长（分钟）", duration, 1, 240, { duration = it }, Modifier.fillMaxWidth())
             }
         },
-        confirmButton = { Button(onClick = { onSave(period.copy(startTime = time, durationMinutes = duration)) }, enabled = timeValid) { Text("应用") } },
+        confirmButton = { Button(onClick = { onSave(period.copy(startTime = time, durationMinutes = duration)) }, enabled = timeValid && periodValidationError(listOf(period.copy(startTime = time, durationMinutes = duration))) == null) { Text("应用") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
@@ -1304,7 +1364,7 @@ private fun ImportPreviewDialog(
     val config = result.parsed.config ?: currentConfig
     var firstMonday by remember(config.startDate) { mutableStateOf(config.monday().toString()) }
     val enteredDate = runCatching { LocalDate.parse(firstMonday) }.getOrNull()
-    val canAppend = config.monday() == currentConfig.monday() && config.totalWeeks == currentConfig.totalWeeks && config.periods == currentConfig.periods
+    val canAppend = config.monday() == currentConfig.monday() && config.totalWeeks == currentConfig.totalWeeks && config.periods == currentConfig.periods && config.continuousTeaching == currentConfig.continuousTeaching
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(26.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().fillMaxHeight(.9f)) {
             Column(Modifier.padding(20.dp)) {

@@ -56,6 +56,7 @@ data class SemesterConfig(
         .with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).toString(),
     val totalWeeks: Int = 20,
     val periods: List<PeriodDefinition> = defaultPeriods(),
+    val continuousTeaching: Boolean = false,
 ) {
     fun monday(): LocalDate = runCatching { LocalDate.parse(startDate) }
         .getOrElse { LocalDate.now() }
@@ -68,6 +69,57 @@ data class SemesterConfig(
 
     fun dateFor(week: Int, day: Int): LocalDate =
         monday().plusWeeks((week - 1).toLong()).plusDays((day - 1).toLong())
+
+    fun courseTime(course: CourseSession): String {
+        val selected = (course.startPeriod until course.startPeriod + course.periodSpan).map { index ->
+            periods.firstOrNull { it.index == index } ?: return "第${course.startPeriod}—${course.startPeriod + course.periodSpan - 1}节"
+        }
+        val first = selected.firstOrNull() ?: return "--:--"
+        val end = if (continuousTeaching) LocalTime.parse(first.startTime)
+            .plusMinutes(selected.sumOf { it.durationMinutes }.toLong()).toString() else selected.last().endTime()
+        return "${first.startTime}–$end"
+    }
+}
+
+/** Generate a range; breaks occur after each group, never inside a linked group. */
+fun generatePeriods(first: Int, last: Int, startTime: String, duration: Int, groupSize: Int, breakMinutes: Int): List<PeriodDefinition> {
+    require(first in 1..30 && last in first..30 && duration in 1..240 && groupSize in 1..30 && breakMinutes in 0..240) { "请检查节次、时长和休息时间" }
+    val start = LocalTime.parse(startTime)
+    val minute = start.hour * 60 + start.minute
+    return (first..last).map { index ->
+        val offset = index - first
+        val from = minute + offset * duration + (offset / groupSize) * breakMinutes
+        require(from + duration < 24 * 60) { "生成的时间超出当天，请减少节数或时长，或分时段设置" }
+        PeriodDefinition(index, LocalTime.of(from / 60, from % 60).toString(), duration)
+    }
+}
+
+fun linkedSchoolPeriods(): List<PeriodDefinition> = listOf(
+    "08:00", "08:45", "09:45", "10:30", "11:30", "13:00", "13:45",
+    "14:45", "15:30", "16:30", "18:00", "18:45", "19:40", "20:25",
+).mapIndexed { index, time -> PeriodDefinition(index + 1, time, 45) }
+
+fun resizePeriods(periods: List<PeriodDefinition>, count: Int): List<PeriodDefinition> {
+    require(count in 1..30)
+    val result = periods.take(count).toMutableList()
+    while (result.size < count) {
+        val previous = result.lastOrNull()
+        result += PeriodDefinition(result.size + 1, previous?.endTime() ?: "08:00", previous?.durationMinutes ?: 45)
+    }
+    return result
+}
+
+fun periodValidationError(periods: List<PeriodDefinition>): String? {
+    var previousEnd = -1
+    periods.forEach { period ->
+        val time = runCatching { LocalTime.parse(period.startTime) }.getOrNull() ?: return "第${period.index}节时间格式无效"
+        val start = time.hour * 60 + time.minute
+        val end = start + period.durationMinutes
+        if (period.durationMinutes !in 1..240 || end >= 1440) return "第${period.index}节超出当天或时长无效，请调整时间"
+        if (start < previousEnd) return "第${period.index}节与前一节时间重叠，请单独调整或批量设置"
+        previousEnd = end
+    }
+    return null
 }
 
 data class ScheduleState(

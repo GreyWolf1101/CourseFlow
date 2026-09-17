@@ -22,8 +22,8 @@ android {
         applicationId = "com.courseflow.app"
         minSdk = 23
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.2.1"
+        versionCode = 8
+        versionName = "1.3.0"
 
         buildConfigField("String", "GITHUB_OWNER", "\"GreyWolf1101\"")
         buildConfigField("String", "GITHUB_REPO", "\"CourseFlow\"")

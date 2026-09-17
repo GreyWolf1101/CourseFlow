@@ -78,6 +78,7 @@ internal fun ScheduleState.toJson() = JSONObject().apply {
         put("name", config.name)
         put("startDate", config.startDate)
         put("totalWeeks", config.totalWeeks)
+        put("continuousTeaching", config.continuousTeaching)
         put("periods", JSONArray().apply {
             config.periods.forEach { period ->
                 put(JSONObject().apply {
@@ -140,6 +141,7 @@ internal fun JSONObject.toScheduleState(): ScheduleState {
             name = configJson.getString("name"),
             startDate = configJson.getString("startDate"),
             totalWeeks = configJson.getInt("totalWeeks"),
+            continuousTeaching = configJson.optBoolean("continuousTeaching", false),
             periods = periods,
         ),
         courses,

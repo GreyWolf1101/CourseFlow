@@ -23,11 +23,7 @@ internal object ScheduleWidgetContent {
     }
 
     fun time(state: ScheduleState, course: CourseSession): String {
-        val endIndex = course.startPeriod + course.periodSpan - 1
-        val start = state.config.periods.firstOrNull { it.index == course.startPeriod }
-        val end = state.config.periods.firstOrNull { it.index == endIndex }
-        return if (start != null && end != null) "${start.startTime}–${end.endTime()}"
-            else "第${course.startPeriod}—${endIndex}节"
+        return state.config.courseTime(course)
     }
 
 }

@@ -27,6 +27,43 @@ class CourseEntryTest {
         compose.setContent { CourseFlowTheme { CourseFlowApp(repository) } }
     }
 
+    @Test fun linkedTemplateAndSinglePeriodEditPersistAndProtectUsedPeriods() {
+        compose.onNodeWithContentDescription("课表设置").performClick()
+        compose.onNodeWithText("应用14节联排模板").performScrollTo().performClick()
+        compose.onNodeWithText("第14节", substring = false).performScrollTo().performClick()
+        compose.onNodeWithText("开始时间（HH:mm）").performTextReplacement("20:30")
+        compose.onNodeWithText("应用", substring = false).performClick()
+        compose.onNodeWithText("保存", substring = false).performClick()
+        compose.runOnIdle {
+            val reloaded = ScheduleRepository(ApplicationProvider.getApplicationContext<Context>()).state.value
+            assertEquals(14, reloaded.config.periods.size)
+            assertEquals("20:30", reloaded.config.periods.last().startTime)
+            assertTrue(reloaded.config.continuousTeaching)
+            repository.saveCourse(CourseSession(name = "最后一节", dayOfWeek = 1, startPeriod = 14))
+        }
+        compose.onNodeWithContentDescription("课表设置").performClick()
+        compose.onNodeWithContentDescription("减少每天上课节数").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithContentDescription("增加每天上课节数").performClick()
+        compose.onNodeWithText("保存", substring = false).performClick()
+        compose.runOnIdle { assertEquals(15, repository.state.value.config.periods.size) }
+    }
+
+    @Test fun batchSettingsGenerateTimesAndCancellationPreservesDraft() {
+        compose.onNodeWithContentDescription("课表设置").performClick()
+        compose.onNodeWithText("批量设置上课时间").performScrollTo().performClick()
+        compose.onNodeWithText("首节开始时间（HH:mm）").performScrollTo().performTextReplacement("07:00")
+        compose.onNodeWithText("应用到所选节次").performClick()
+        compose.onNodeWithText("批量设置上课时间").performScrollTo().performClick()
+        compose.onNodeWithText("首节开始时间（HH:mm）").performScrollTo().performTextReplacement("23:00")
+        compose.onNodeWithText("应用到所选节次").assertIsNotEnabled()
+        compose.onNodeWithText("取消", substring = false).performClick()
+        compose.onNodeWithText("保存", substring = false).performClick()
+        compose.runOnIdle {
+            assertEquals("07:00", repository.state.value.config.periods.first().startTime)
+            assertEquals("18:00", repository.state.value.config.periods.last().startTime)
+        }
+    }
+
     @Test fun tappingSlotUsesViewedWeekDayAndPeriodAndPersistsWithoutSettings() {
         compose.onAllNodesWithText("+").assertCountEquals(0)
         compose.onNodeWithContentDescription("选择周次，当前第1周").performClick()
